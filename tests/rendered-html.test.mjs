@@ -29,16 +29,22 @@ test("server-renders the Sudoku game", async () => {
   assert.match(html, /<title>九宫 SUDOKU｜专注每一格<\/title>/i);
   assert.match(html, /9乘9数独棋盘/);
   assert.match(html, /专家/);
+  assert.match(html, /历史关卡/);
   assert.match(html, /填入数字 9/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
 test("ships the finished social image and removes the starter preview", async () => {
-  const [packageJson] = await Promise.all([
+  const [packageJson, pageSource] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     access(new URL("../public/og.png", import.meta.url)),
   ]);
 
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.match(pageSource, /isCompleteSudoku\(nextBoard\)/);
+  assert.match(pageSource, /solveSudoku\(board\)/);
+  assert.match(pageSource, /jiugong-sudoku-history-v1/);
+  assert.doesNotMatch(pageSource, /value\s*!==\s*solution\[selected\]/);
   await assert.rejects(access(new URL("../app\/_sites-preview", import.meta.url)));
 });

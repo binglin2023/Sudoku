@@ -5,7 +5,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type Difficulty = "easy" | "medium" | "hard" | "expert";
 type Notes = Record<number, number[]>;
 type Snapshot = { board: number[]; notes: Notes };
+type GameRecord = {
+  id: string;
+  finishedAt: string;
+  difficulty: Difficulty;
+  puzzle: number[];
+  board: number[];
+  seconds: number;
+  mistakes: number;
+};
 
+const HISTORY_KEY = "jiugong-sudoku-history-v1";
 const DIFFICULTIES: Record<
   Difficulty,
   { label: string; clues: number; description: string }
@@ -15,11 +25,6 @@ const DIFFICULTIES: Record<
   hard: { label: "困难", clues: 27, description: "进阶挑战" },
   expert: { label: "专家", clues: 21, description: "极限演绎" },
 };
-
-const BASE_SOLUTION =
-  "534678912672195348198342567859761423426853791713924856961537284287419635345286179"
-    .split("")
-    .map(Number);
 
 const EXPERT_PUZZLE =
   "500008000070000008000300500009000400400800001003000800000500200200010000000006070"
@@ -57,7 +62,68 @@ function makePuzzle(difficulty: Difficulty) {
     .forEach((index) => {
       puzzle[index] = solution[index];
     });
-  return { puzzle, solution };
+  return puzzle;
+}
+
+function isPlacementValid(board: number[], index: number, value: number) {
+  if (value === 0) return true;
+  const row = Math.floor(index / 9);
+  const column = index % 9;
+  const boxRow = Math.floor(row / 3) * 3;
+  const boxColumn = Math.floor(column / 3) * 3;
+
+  for (let cursor = 0; cursor < 9; cursor += 1) {
+    const rowIndex = row * 9 + cursor;
+    const columnIndex = cursor * 9 + column;
+    if (rowIndex !== index && board[rowIndex] === value) return false;
+    if (columnIndex !== index && board[columnIndex] === value) return false;
+  }
+
+  for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
+    for (let columnOffset = 0; columnOffset < 3; columnOffset += 1) {
+      const boxIndex = (boxRow + rowOffset) * 9 + boxColumn + columnOffset;
+      if (boxIndex !== index && board[boxIndex] === value) return false;
+    }
+  }
+  return true;
+}
+
+function isCompleteSudoku(board: number[]) {
+  return board.every(
+    (value, index) => value !== 0 && isPlacementValid(board, index, value),
+  );
+}
+
+function solveSudoku(input: number[]) {
+  const board = [...input];
+
+  const solve = (): boolean => {
+    let target = -1;
+    let candidates: number[] = [];
+
+    for (let index = 0; index < 81; index += 1) {
+      if (board[index] !== 0) continue;
+      const options = Array.from({ length: 9 }, (_, value) => value + 1).filter(
+        (value) => isPlacementValid(board, index, value),
+      );
+      if (options.length === 0) return false;
+      if (target === -1 || options.length < candidates.length) {
+        target = index;
+        candidates = options;
+        if (options.length === 1) break;
+      }
+    }
+
+    if (target === -1) return true;
+    for (const value of candidates) {
+      board[target] = value;
+      if (solve()) return true;
+      board[target] = 0;
+    }
+    return false;
+  };
+
+  return solve() ? board : null;
 }
 
 const formatTime = (seconds: number) =>
@@ -65,14 +131,24 @@ const formatTime = (seconds: number) =>
     seconds % 60,
   ).padStart(2, "0")}`;
 
+const formatDate = (date: string) =>
+  new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(date));
+
 export default function Home() {
   const [difficulty, setDifficulty] = useState<Difficulty>("expert");
-  const [solution, setSolution] = useState(BASE_SOLUTION);
   const [puzzle, setPuzzle] = useState(EXPERT_PUZZLE);
   const [board, setBoard] = useState(EXPERT_PUZZLE);
   const [selected, setSelected] = useState<number | null>(null);
   const [notes, setNotes] = useState<Notes>({});
-  const [history, setHistory] = useState<Snapshot[]>([]);
+  const [undoHistory, setUndoHistory] = useState<Snapshot[]>([]);
+  const [savedGames, setSavedGames] = useState<GameRecord[]>([]);
+  const [reviewing, setReviewing] = useState<GameRecord | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [mistakes, setMistakes] = useState(0);
   const [seconds, setSeconds] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -81,40 +157,113 @@ export default function Home() {
   const [won, setWon] = useState(false);
 
   useEffect(() => {
-    if (paused || won) return;
+    try {
+      const raw = window.localStorage.getItem(HISTORY_KEY);
+      if (!raw) return;
+      const records = JSON.parse(raw) as GameRecord[];
+      if (Array.isArray(records)) {
+        setSavedGames(
+          records.filter(
+            (record) =>
+              record &&
+              Array.isArray(record.puzzle) &&
+              record.puzzle.length === 81 &&
+              Array.isArray(record.board) &&
+              record.board.length === 81 &&
+              record.difficulty in DIFFICULTIES,
+          ),
+        );
+      }
+    } catch {
+      window.localStorage.removeItem(HISTORY_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (paused || won || reviewing || historyOpen) return;
     const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [paused, won]);
+  }, [historyOpen, paused, reviewing, won]);
 
+  const activeBoard = reviewing?.board ?? board;
+  const activePuzzle = reviewing?.puzzle ?? puzzle;
+  const activeDifficulty = reviewing?.difficulty ?? difficulty;
+  const activeMistakes = reviewing?.mistakes ?? mistakes;
+  const activeSeconds = reviewing?.seconds ?? seconds;
   const completed = useMemo(
-    () => board.filter((value) => value !== 0).length,
-    [board],
+    () => activeBoard.filter((value) => value !== 0).length,
+    [activeBoard],
   );
-  const selectedValue = selected === null ? 0 : board[selected];
+  const remainingCounts = useMemo(() => {
+    const counts = Array(10).fill(9);
+    board.forEach((value) => {
+      if (value !== 0) counts[value] -= 1;
+    });
+    return counts;
+  }, [board]);
+  const selectedValue = selected === null ? 0 : activeBoard[selected];
 
   const startGame = useCallback((nextDifficulty: Difficulty = difficulty) => {
-    const next = makePuzzle(nextDifficulty);
+    const nextPuzzle = makePuzzle(nextDifficulty);
     setDifficulty(nextDifficulty);
-    setSolution(next.solution);
-    setPuzzle(next.puzzle);
-    setBoard(next.puzzle);
+    setPuzzle(nextPuzzle);
+    setBoard(nextPuzzle);
     setSelected(null);
     setNotes({});
-    setHistory([]);
+    setUndoHistory([]);
     setMistakes(0);
     setSeconds(0);
     setPaused(false);
     setWon(false);
+    setReviewing(null);
+    setHistoryOpen(false);
     setStatus(`${DIFFICULTIES[nextDifficulty].label}难度 · 选择一个空格开始`);
   }, [difficulty]);
 
   const pushHistory = useCallback(() => {
-    setHistory((items) => [...items.slice(-39), { board: [...board], notes: { ...notes } }]);
+    setUndoHistory((items) => [
+      ...items.slice(-39),
+      { board: [...board], notes: { ...notes } },
+    ]);
   }, [board, notes]);
+
+  const finishGame = useCallback(
+    (finalBoard: number[]) => {
+      const record: GameRecord = {
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random()}`,
+        finishedAt: new Date().toISOString(),
+        difficulty,
+        puzzle: [...puzzle],
+        board: [...finalBoard],
+        seconds,
+        mistakes,
+      };
+      setSavedGames((items) => {
+        const next = [record, ...items].slice(0, 30);
+        try {
+          window.localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setWon(true);
+      setStatus("完成！这是一个合法的数独解");
+    },
+    [difficulty, mistakes, puzzle, seconds],
+  );
 
   const enterNumber = useCallback(
     (value: number) => {
-      if (selected === null || puzzle[selected] !== 0 || paused || won) return;
+      if (
+        reviewing ||
+        selected === null ||
+        puzzle[selected] !== 0 ||
+        paused ||
+        won
+      ) return;
+      if (value !== 0 && remainingCounts[value] === 0) return;
 
       if (noteMode && value !== 0) {
         pushHistory();
@@ -129,9 +278,9 @@ export default function Home() {
         return;
       }
 
-      if (value !== 0 && value !== solution[selected]) {
+      if (value !== 0 && !isPlacementValid(board, selected, value)) {
         setMistakes((count) => count + 1);
-        setStatus(`${value} 不适合这个位置，再想一想`);
+        setStatus(`${value} 与同行、同列或同宫的数字冲突`);
         return;
       }
 
@@ -147,38 +296,54 @@ export default function Home() {
 
       if (value === 0) {
         setStatus("已清除当前格");
-      } else if (nextBoard.every((number, index) => number === solution[index])) {
-        setWon(true);
-        setStatus("完成！每一格都正确");
+      } else if (isCompleteSudoku(nextBoard)) {
+        finishGame(nextBoard);
       } else {
         setStatus(`${value} 已填入`);
       }
     },
-    [board, noteMode, paused, puzzle, pushHistory, selected, solution, won],
+    [
+      board,
+      finishGame,
+      noteMode,
+      paused,
+      puzzle,
+      pushHistory,
+      remainingCounts,
+      reviewing,
+      selected,
+      won,
+    ],
   );
 
   const undo = useCallback(() => {
-    const previous = history[history.length - 1];
+    const previous = undoHistory[undoHistory.length - 1];
     if (!previous) {
       setStatus("还没有可撤销的操作");
       return;
     }
     setBoard(previous.board);
     setNotes(previous.notes);
-    setHistory((items) => items.slice(0, -1));
+    setUndoHistory((items) => items.slice(0, -1));
     setWon(false);
     setStatus("已撤销上一步");
-  }, [history]);
+  }, [undoHistory]);
 
   const revealHint = useCallback(() => {
+    if (reviewing || paused || won) return;
+    const solved = solveSudoku(board);
+    if (!solved) {
+      setStatus("当前填写会导致题目无解，请先撤销或修改数字");
+      return;
+    }
     const target =
       selected !== null && puzzle[selected] === 0 && board[selected] === 0
         ? selected
         : board.findIndex((value, index) => value === 0 && puzzle[index] === 0);
-    if (target < 0 || paused || won) return;
+    if (target < 0) return;
     pushHistory();
     const next = [...board];
-    next[target] = solution[target];
+    next[target] = solved[target];
     setBoard(next);
     setSelected(target);
     setNotes((current) => {
@@ -186,15 +351,28 @@ export default function Home() {
       delete updated[target];
       return updated;
     });
-    setStatus("已揭示一个数字");
-    if (next.every((number, index) => number === solution[index])) setWon(true);
-  }, [board, paused, puzzle, pushHistory, selected, solution, won]);
+    setStatus("已揭示一个与当前解法兼容的数字");
+    if (isCompleteSudoku(next)) finishGame(next);
+  }, [board, finishGame, paused, puzzle, pushHistory, reviewing, selected, won]);
+
+  const openReview = useCallback((record: GameRecord) => {
+    setReviewing(record);
+    setHistoryOpen(false);
+    setWon(false);
+    setSelected(null);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (historyOpen) setHistoryOpen(false);
+        else if (reviewing) setReviewing(null);
+      }
       if (event.key >= "1" && event.key <= "9") enterNumber(Number(event.key));
       if (event.key === "Backspace" || event.key === "Delete") enterNumber(0);
-      if (event.key.toLowerCase() === "n") setNoteMode((value) => !value);
+      if (event.key.toLowerCase() === "n" && !reviewing) {
+        setNoteMode((value) => !value);
+      }
       if (selected === null) return;
       const row = Math.floor(selected / 9);
       const column = selected % 9;
@@ -211,7 +389,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [enterNumber, selected]);
+  }, [enterNumber, historyOpen, reviewing, selected]);
 
   return (
     <main className="app-shell">
@@ -221,77 +399,79 @@ export default function Home() {
           <span>九宫 <b>SUDOKU</b></span>
         </a>
         <p className="topbar-note">专注每一格</p>
-        <button className="new-game-top" onClick={() => startGame()}>
-          新游戏
-        </button>
+        <div className="topbar-actions">
+          <button className="history-button" onClick={() => setHistoryOpen(true)}>
+            历史关卡{savedGames.length > 0 ? ` ${savedGames.length}` : ""}
+          </button>
+          <button className="new-game-top" onClick={() => startGame()}>
+            新游戏
+          </button>
+        </div>
       </header>
 
       <section className="game-toolbar" aria-label="游戏状态">
-        <label className="difficulty-field">
-          <span>难度</span>
-          <select
-            value={difficulty}
-            onChange={(event) => startGame(event.target.value as Difficulty)}
-            aria-label="选择难度"
-          >
-            {(Object.keys(DIFFICULTIES) as Difficulty[]).map((key) => (
-              <option key={key} value={key}>{DIFFICULTIES[key].label}</option>
-            ))}
-          </select>
-        </label>
-        <span className="toolbar-divider" />
-        <div className="timer">
-          <span>用时</span>
-          <strong>{formatTime(seconds)}</strong>
-        </div>
-        <button className="pause-button" onClick={() => setPaused((value) => !value)}>
-          {paused ? "继续" : "暂停"}
-        </button>
-        <div className="progress-inline">
-          <span>进度</span>
-          <strong>{completed}/81</strong>
-        </div>
+        {reviewing ? (
+          <>
+            <div className="review-toolbar-copy">
+              <span>历史复盘</span>
+              <strong>{formatDate(reviewing.finishedAt)}</strong>
+            </div>
+            <span className="toolbar-divider" />
+            <div className="timer"><span>用时</span><strong>{formatTime(activeSeconds)}</strong></div>
+            <button className="pause-button" onClick={() => setReviewing(null)}>退出复盘</button>
+          </>
+        ) : (
+          <>
+            <label className="difficulty-field">
+              <span>难度</span>
+              <select
+                value={difficulty}
+                onChange={(event) => startGame(event.target.value as Difficulty)}
+                aria-label="选择难度"
+              >
+                {(Object.keys(DIFFICULTIES) as Difficulty[]).map((key) => (
+                  <option key={key} value={key}>{DIFFICULTIES[key].label}</option>
+                ))}
+              </select>
+            </label>
+            <span className="toolbar-divider" />
+            <div className="timer"><span>用时</span><strong>{formatTime(seconds)}</strong></div>
+            <button className="pause-button" onClick={() => setPaused((value) => !value)}>
+              {paused ? "继续" : "暂停"}
+            </button>
+            <div className="progress-inline"><span>进度</span><strong>{completed}/81</strong></div>
+          </>
+        )}
       </section>
 
       <div className="game-layout">
         <aside className="info-rail" aria-label="本局信息">
-          <p className="eyebrow">本局挑战</p>
-          <h1>{DIFFICULTIES[difficulty].label}</h1>
-          <p className="muted">{DIFFICULTIES[difficulty].description}</p>
+          <p className="eyebrow">{reviewing ? "历史记录" : "本局挑战"}</p>
+          <h1>{DIFFICULTIES[activeDifficulty].label}</h1>
+          <p className="muted">{reviewing ? "已完成 · 只读复盘" : DIFFICULTIES[difficulty].description}</p>
           <div className="stat-block">
-            <span>已完成</span>
-            <strong>{Math.round((completed / 81) * 100)}%</strong>
-            <div className="progress-track">
-              <span style={{ width: `${(completed / 81) * 100}%` }} />
-            </div>
+            <span>已完成</span><strong>{Math.round((completed / 81) * 100)}%</strong>
+            <div className="progress-track"><span style={{ width: `${(completed / 81) * 100}%` }} /></div>
           </div>
-          <div className="stat-row">
-            <span>错误</span>
-            <strong>{mistakes}</strong>
-          </div>
+          <div className="stat-row"><span>错误</span><strong>{activeMistakes}</strong></div>
           <p className="shortcut">
-            <kbd>1–9</kbd> 输入 · <kbd>N</kbd> 笔记
+            {reviewing ? "点击任意数字可查看关联位置" : <><kbd>1–9</kbd> 输入 · <kbd>N</kbd> 笔记</>}
           </p>
         </aside>
 
         <section className="board-column">
           <div className="board-wrap">
-            <div
-              className={`sudoku-board ${paused ? "is-paused" : ""}`}
-              role="grid"
-              aria-label="9乘9数独棋盘"
-            >
-              {board.map((value, index) => {
+            <div className={`sudoku-board ${paused ? "is-paused" : ""}`} role="grid" aria-label={reviewing ? "历史关卡复盘棋盘" : "9乘9数独棋盘"}>
+              {activeBoard.map((value, index) => {
                 const row = Math.floor(index / 9);
                 const column = index % 9;
                 const selectedRow = selected === null ? -1 : Math.floor(selected / 9);
                 const selectedColumn = selected === null ? -1 : selected % 9;
                 const classes = [
                   "cell",
-                  puzzle[index] !== 0 ? "given" : "editable",
-                  selected !== null && (row === selectedRow || column === selectedColumn)
-                    ? "in-cross"
-                    : "",
+                  activePuzzle[index] !== 0 ? "given" : "editable",
+                  reviewing ? "review-cell" : "",
+                  selected !== null && (row === selectedRow || column === selectedColumn) ? "in-cross" : "",
                   selectedValue !== 0 && value === selectedValue ? "same-value" : "",
                   selected === index ? "selected-cell" : "",
                   column % 3 === 2 && column !== 8 ? "box-right" : "",
@@ -303,21 +483,17 @@ export default function Home() {
                     key={index}
                     className={classes}
                     role="gridcell"
-                    aria-label={`第 ${row + 1} 行第 ${column + 1} 列${
-                      value ? `，数字 ${value}` : "，空格"
-                    }`}
+                    aria-label={`第 ${row + 1} 行第 ${column + 1} 列${value ? `，数字 ${value}` : "，空格"}`}
                     aria-selected={selected === index}
                     data-testid={`cell-${index}`}
                     onClick={() => {
-                      if (!paused) {
+                      if (!paused || reviewing) {
                         setSelected(index);
                         setStatus(value ? `已选中数字 ${value}` : "选择一个数字填入");
                       }
                     }}
                   >
-                    {value !== 0 ? (
-                      <span>{value}</span>
-                    ) : notes[index]?.length ? (
+                    {value !== 0 ? <span>{value}</span> : notes[index]?.length && !reviewing ? (
                       <span className="notes-grid">
                         {Array.from({ length: 9 }, (_, note) => (
                           <i key={note}>{notes[index]?.includes(note + 1) ? note + 1 : ""}</i>
@@ -327,63 +503,99 @@ export default function Home() {
                   </button>
                 );
               })}
-              {paused && (
+              {paused && !reviewing && (
                 <button className="pause-overlay" onClick={() => setPaused(false)}>
-                  <span>游戏已暂停</span>
-                  <b>点击继续</b>
+                  <span>游戏已暂停</span><b>点击继续</b>
                 </button>
               )}
             </div>
           </div>
 
-          <div className="number-pad" aria-label="数字键盘">
-            {Array.from({ length: 9 }, (_, index) => index + 1).map((number) => (
-              <button
-                key={number}
-                className={selectedValue === number ? "active" : ""}
-                onClick={() => enterNumber(number)}
-                aria-label={`填入数字 ${number}`}
-              >
-                {number}
-              </button>
-            ))}
-            <button className="erase-key" onClick={() => enterNumber(0)} aria-label="清除">
-              ×
-            </button>
-          </div>
-          <p className="status-line" role="status" aria-live="polite">{status}</p>
+          {reviewing ? (
+            <div className="review-summary">
+              <span><i className="legend-given">8</i> 原始数字</span>
+              <span><i className="legend-filled">8</i> 最终填入</span>
+              <strong>{formatTime(reviewing.seconds)}</strong>
+            </div>
+          ) : (
+            <div className="number-pad" aria-label="数字键盘">
+              {Array.from({ length: 9 }, (_, index) => index + 1).map((number) => (
+                <button
+                  key={number}
+                  className={selectedValue === number ? "active" : ""}
+                  onClick={() => enterNumber(number)}
+                  aria-label={`填入数字 ${number}，剩余 ${remainingCounts[number]} 个`}
+                  disabled={remainingCounts[number] === 0}
+                >
+                  <span>{number}</span>
+                  <small>{remainingCounts[number] === 0 ? "完成" : `剩 ${remainingCounts[number]}`}</small>
+                </button>
+              ))}
+              <button className="erase-key" onClick={() => enterNumber(0)} aria-label="清除">×</button>
+            </div>
+          )}
+          <p className="status-line" role="status" aria-live="polite">
+            {reviewing ? "复盘模式：粗体为原始题目，常规字重为你的最终答案" : status}
+          </p>
         </section>
 
-        <aside className="action-rail" aria-label="游戏操作">
-          <p className="eyebrow">工具</p>
-          <button onClick={undo} disabled={history.length === 0}>
-            <span aria-hidden="true">↶</span><b>撤销</b><small>回到上一步</small>
-          </button>
-          <button
-            className={noteMode ? "active-tool" : ""}
-            onClick={() => {
-              setNoteMode((value) => !value);
-              setStatus(noteMode ? "笔记模式已关闭" : "笔记模式已开启");
-            }}
-          >
-            <span aria-hidden="true">✎</span><b>笔记</b><small>{noteMode ? "当前已开启" : "记录候选数"}</small>
-          </button>
-          <button onClick={() => enterNumber(0)}>
-            <span aria-hidden="true">⌫</span><b>擦除</b><small>清除当前格</small>
-          </button>
-          <button onClick={revealHint}>
-            <span aria-hidden="true">?</span><b>提示</b><small>揭示一个数字</small>
-          </button>
+        <aside className="action-rail" aria-label={reviewing ? "复盘操作" : "游戏操作"}>
+          <p className="eyebrow">{reviewing ? "复盘" : "工具"}</p>
+          {reviewing ? (
+            <>
+              <div className="review-detail"><span aria-hidden="true">✓</span><b>合法解法</b><small>按数独规则验证</small></div>
+              <div className="review-detail"><span aria-hidden="true">◷</span><b>{formatTime(reviewing.seconds)}</b><small>完成用时</small></div>
+              <div className="review-detail"><span aria-hidden="true">×</span><b>{reviewing.mistakes} 次</b><small>冲突次数</small></div>
+              <button onClick={() => setReviewing(null)}><span aria-hidden="true">←</span><b>返回游戏</b><small>退出历史复盘</small></button>
+            </>
+          ) : (
+            <>
+              <button onClick={undo} disabled={undoHistory.length === 0}><span aria-hidden="true">↶</span><b>撤销</b><small>回到上一步</small></button>
+              <button className={noteMode ? "active-tool" : ""} onClick={() => { setNoteMode((value) => !value); setStatus(noteMode ? "笔记模式已关闭" : "笔记模式已开启"); }}>
+                <span aria-hidden="true">✎</span><b>笔记</b><small>{noteMode ? "当前已开启" : "记录候选数"}</small>
+              </button>
+              <button onClick={() => enterNumber(0)}><span aria-hidden="true">⌫</span><b>擦除</b><small>清除当前格</small></button>
+              <button onClick={revealHint}><span aria-hidden="true">?</span><b>提示</b><small>适配当前解法</small></button>
+            </>
+          )}
         </aside>
       </div>
+
+      {historyOpen && (
+        <div className="history-layer" role="dialog" aria-modal="true" aria-label="历史关卡">
+          <section className="history-panel">
+            <header>
+              <div><span className="win-kicker">GAME ARCHIVE</span><h2>历史关卡</h2></div>
+              <button onClick={() => setHistoryOpen(false)} aria-label="关闭历史关卡">×</button>
+            </header>
+            {savedGames.length === 0 ? (
+              <div className="history-empty"><b>还没有完成记录</b><p>完成一局后，题面和最终答案会自动保存在这里。</p></div>
+            ) : (
+              <div className="history-list">
+                {savedGames.map((record, index) => (
+                  <button key={record.id} className="history-item" onClick={() => openReview(record)}>
+                    <span className="history-index">{String(savedGames.length - index).padStart(2, "0")}</span>
+                    <span><b>{DIFFICULTIES[record.difficulty].label}关卡</b><small>{formatDate(record.finishedAt)}</small></span>
+                    <span><b>{formatTime(record.seconds)}</b><small>错误 {record.mistakes}</small></span>
+                    <strong>复盘 →</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {won && (
         <div className="win-layer" role="dialog" aria-modal="true" aria-label="游戏完成">
           <div className="win-card">
             <span className="win-kicker">COMPLETED</span>
-            <h2>漂亮，全部完成</h2>
-            <p>用时 {formatTime(seconds)} · 错误 {mistakes} 次</p>
-            <button onClick={() => startGame()}>再来一局</button>
+            <h2>漂亮，解法成立</h2>
+            <p>用时 {formatTime(seconds)} · 冲突 {mistakes} 次</p>
+            <div className="win-actions">
+              <button className="secondary" onClick={() => savedGames[0] && openReview(savedGames[0])}>立即复盘</button>
+              <button onClick={() => startGame()}>再来一局</button>
+            </div>
           </div>
         </div>
       )}
