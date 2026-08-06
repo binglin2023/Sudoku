@@ -26,6 +26,11 @@ const DIFFICULTIES: Record<
   expert: { label: "专家", clues: 21, description: "极限演绎" },
 };
 
+const BASE_SOLUTION =
+  "534678912672195348198342567859761423426853791713924856961537284287419635345286179"
+    .split("")
+    .map(Number);
+
 const EXPERT_PUZZLE =
   "500008000070000008000300500009000400400800001003000800000500200200010000000006070"
     .split("")
@@ -62,68 +67,7 @@ function makePuzzle(difficulty: Difficulty) {
     .forEach((index) => {
       puzzle[index] = solution[index];
     });
-  return puzzle;
-}
-
-function isPlacementValid(board: number[], index: number, value: number) {
-  if (value === 0) return true;
-  const row = Math.floor(index / 9);
-  const column = index % 9;
-  const boxRow = Math.floor(row / 3) * 3;
-  const boxColumn = Math.floor(column / 3) * 3;
-
-  for (let cursor = 0; cursor < 9; cursor += 1) {
-    const rowIndex = row * 9 + cursor;
-    const columnIndex = cursor * 9 + column;
-    if (rowIndex !== index && board[rowIndex] === value) return false;
-    if (columnIndex !== index && board[columnIndex] === value) return false;
-  }
-
-  for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
-    for (let columnOffset = 0; columnOffset < 3; columnOffset += 1) {
-      const boxIndex = (boxRow + rowOffset) * 9 + boxColumn + columnOffset;
-      if (boxIndex !== index && board[boxIndex] === value) return false;
-    }
-  }
-  return true;
-}
-
-function isCompleteSudoku(board: number[]) {
-  return board.every(
-    (value, index) => value !== 0 && isPlacementValid(board, index, value),
-  );
-}
-
-function solveSudoku(input: number[]) {
-  const board = [...input];
-
-  const solve = (): boolean => {
-    let target = -1;
-    let candidates: number[] = [];
-
-    for (let index = 0; index < 81; index += 1) {
-      if (board[index] !== 0) continue;
-      const options = Array.from({ length: 9 }, (_, value) => value + 1).filter(
-        (value) => isPlacementValid(board, index, value),
-      );
-      if (options.length === 0) return false;
-      if (target === -1 || options.length < candidates.length) {
-        target = index;
-        candidates = options;
-        if (options.length === 1) break;
-      }
-    }
-
-    if (target === -1) return true;
-    for (const value of candidates) {
-      board[target] = value;
-      if (solve()) return true;
-      board[target] = 0;
-    }
-    return false;
-  };
-
-  return solve() ? board : null;
+  return { puzzle, solution };
 }
 
 const formatTime = (seconds: number) =>
@@ -141,6 +85,7 @@ const formatDate = (date: string) =>
 
 export default function Home() {
   const [difficulty, setDifficulty] = useState<Difficulty>("expert");
+  const [solution, setSolution] = useState(BASE_SOLUTION);
   const [puzzle, setPuzzle] = useState(EXPERT_PUZZLE);
   const [board, setBoard] = useState(EXPERT_PUZZLE);
   const [selected, setSelected] = useState<number | null>(null);
@@ -204,10 +149,11 @@ export default function Home() {
   const selectedValue = selected === null ? 0 : activeBoard[selected];
 
   const startGame = useCallback((nextDifficulty: Difficulty = difficulty) => {
-    const nextPuzzle = makePuzzle(nextDifficulty);
+    const next = makePuzzle(nextDifficulty);
     setDifficulty(nextDifficulty);
-    setPuzzle(nextPuzzle);
-    setBoard(nextPuzzle);
+    setSolution(next.solution);
+    setPuzzle(next.puzzle);
+    setBoard(next.puzzle);
     setSelected(null);
     setNotes({});
     setUndoHistory([]);
@@ -249,7 +195,7 @@ export default function Home() {
         return next;
       });
       setWon(true);
-      setStatus("完成！这是一个合法的数独解");
+      setStatus("完成！每一格都与关卡答案一致");
     },
     [difficulty, mistakes, puzzle, seconds],
   );
@@ -278,9 +224,9 @@ export default function Home() {
         return;
       }
 
-      if (value !== 0 && !isPlacementValid(board, selected, value)) {
+      if (value !== 0 && value !== solution[selected]) {
         setMistakes((count) => count + 1);
-        setStatus(`${value} 与同行、同列或同宫的数字冲突`);
+        setStatus(`${value} 不适合这个位置，再想一想`);
         return;
       }
 
@@ -296,7 +242,7 @@ export default function Home() {
 
       if (value === 0) {
         setStatus("已清除当前格");
-      } else if (isCompleteSudoku(nextBoard)) {
+      } else if (nextBoard.every((number, index) => number === solution[index])) {
         finishGame(nextBoard);
       } else {
         setStatus(`${value} 已填入`);
@@ -312,6 +258,7 @@ export default function Home() {
       remainingCounts,
       reviewing,
       selected,
+      solution,
       won,
     ],
   );
@@ -331,11 +278,6 @@ export default function Home() {
 
   const revealHint = useCallback(() => {
     if (reviewing || paused || won) return;
-    const solved = solveSudoku(board);
-    if (!solved) {
-      setStatus("当前填写会导致题目无解，请先撤销或修改数字");
-      return;
-    }
     const target =
       selected !== null && puzzle[selected] === 0 && board[selected] === 0
         ? selected
@@ -343,7 +285,7 @@ export default function Home() {
     if (target < 0) return;
     pushHistory();
     const next = [...board];
-    next[target] = solved[target];
+    next[target] = solution[target];
     setBoard(next);
     setSelected(target);
     setNotes((current) => {
@@ -351,9 +293,9 @@ export default function Home() {
       delete updated[target];
       return updated;
     });
-    setStatus("已揭示一个与当前解法兼容的数字");
-    if (isCompleteSudoku(next)) finishGame(next);
-  }, [board, finishGame, paused, puzzle, pushHistory, reviewing, selected, won]);
+    setStatus("已揭示一个数字");
+    if (next.every((number, index) => number === solution[index])) finishGame(next);
+  }, [board, finishGame, paused, puzzle, pushHistory, reviewing, selected, solution, won]);
 
   const openReview = useCallback((record: GameRecord) => {
     setReviewing(record);
@@ -543,7 +485,7 @@ export default function Home() {
           <p className="eyebrow">{reviewing ? "复盘" : "工具"}</p>
           {reviewing ? (
             <>
-              <div className="review-detail"><span aria-hidden="true">✓</span><b>合法解法</b><small>按数独规则验证</small></div>
+              <div className="review-detail"><span aria-hidden="true">✓</span><b>标准答案</b><small>与关卡答案一致</small></div>
               <div className="review-detail"><span aria-hidden="true">◷</span><b>{formatTime(reviewing.seconds)}</b><small>完成用时</small></div>
               <div className="review-detail"><span aria-hidden="true">×</span><b>{reviewing.mistakes} 次</b><small>冲突次数</small></div>
               <button onClick={() => setReviewing(null)}><span aria-hidden="true">←</span><b>返回游戏</b><small>退出历史复盘</small></button>
@@ -555,7 +497,7 @@ export default function Home() {
                 <span aria-hidden="true">✎</span><b>笔记</b><small>{noteMode ? "当前已开启" : "记录候选数"}</small>
               </button>
               <button onClick={() => enterNumber(0)}><span aria-hidden="true">⌫</span><b>擦除</b><small>清除当前格</small></button>
-              <button onClick={revealHint}><span aria-hidden="true">?</span><b>提示</b><small>适配当前解法</small></button>
+              <button onClick={revealHint}><span aria-hidden="true">?</span><b>提示</b><small>揭示标准答案</small></button>
             </>
           )}
         </aside>
@@ -590,7 +532,7 @@ export default function Home() {
         <div className="win-layer" role="dialog" aria-modal="true" aria-label="游戏完成">
           <div className="win-card">
             <span className="win-kicker">COMPLETED</span>
-            <h2>漂亮，解法成立</h2>
+            <h2>漂亮，全部正确</h2>
             <p>用时 {formatTime(seconds)} · 冲突 {mistakes} 次</p>
             <div className="win-actions">
               <button className="secondary" onClick={() => savedGames[0] && openReview(savedGames[0])}>立即复盘</button>
