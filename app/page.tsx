@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createUniquePuzzle } from "@/lib/sudoku";
 
 type Difficulty = "easy" | "medium" | "hard" | "expert";
 type Notes = Record<number, number[]>;
@@ -27,12 +28,12 @@ const DIFFICULTIES: Record<
 };
 
 const BASE_SOLUTION =
-  "534678912672195348198342567859761423426853791713924856961537284287419635345286179"
+  "162857493534129678789643521475312986913586742628794135356478219241935867897261354"
     .split("")
     .map(Number);
 
 const EXPERT_PUZZLE =
-  "500008000070000008000300500009000400400800001003000800000500200200010000000006070"
+  "100007090030020008009600500005300900010080002600004000300000010040000007007000300"
     .split("")
     .map(Number);
 
@@ -61,12 +62,7 @@ function makeSolution() {
 
 function makePuzzle(difficulty: Difficulty) {
   const solution = makeSolution();
-  const puzzle = Array(81).fill(0);
-  shuffle(Array.from({ length: 81 }, (_, index) => index))
-    .slice(0, DIFFICULTIES[difficulty].clues)
-    .forEach((index) => {
-      puzzle[index] = solution[index];
-    });
+  const puzzle = createUniquePuzzle(solution, DIFFICULTIES[difficulty].clues);
   return { puzzle, solution };
 }
 
