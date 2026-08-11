@@ -233,6 +233,39 @@ export default function Home() {
       setNotes((current) => {
         const next = { ...current };
         delete next[selected];
+
+        // 清除同一行、同一列、同一九宫格内所有冲突的笔记
+        if (value !== 0) {
+          const selectedRow = Math.floor(selected / 9);
+          const selectedCol = selected % 9;
+          const selectedBox =
+            Math.floor(selectedRow / 3) * 3 + Math.floor(selectedCol / 3);
+
+          for (let i = 0; i < 81; i++) {
+            const cellRow = Math.floor(i / 9);
+            const cellCol = i % 9;
+            const cellBox =
+              Math.floor(cellRow / 3) * 3 + Math.floor(cellCol / 3);
+
+            if (
+              i !== selected &&
+              (cellRow === selectedRow ||
+                cellCol === selectedCol ||
+                cellBox === selectedBox)
+            ) {
+              const cellNotes = next[i];
+              if (cellNotes && cellNotes.includes(value)) {
+                const filtered = cellNotes.filter((n) => n !== value);
+                if (filtered.length > 0) {
+                  next[i] = filtered;
+                } else {
+                  delete next[i];
+                }
+              }
+            }
+          }
+        }
+
         return next;
       });
 
