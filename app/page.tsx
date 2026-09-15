@@ -6,6 +6,22 @@ import { createUniquePuzzle } from "@/lib/sudoku";
 type Difficulty = "easy" | "medium" | "hard" | "expert";
 type Notes = Record<number, number[]>;
 type Snapshot = { board: number[]; notes: Notes };
+type CurrentGameSave = {
+  version: 1;
+  difficulty: Difficulty;
+  solution: number[];
+  puzzle: number[];
+  board: number[];
+  selected: number | null;
+  notes: Notes;
+  undoHistory: Snapshot[];
+  mistakes: number;
+  seconds: number;
+  paused: boolean;
+  noteMode: boolean;
+  status: string;
+  won: boolean;
+};
 type GameRecord = {
   id: string;
   finishedAt: string;
@@ -17,6 +33,7 @@ type GameRecord = {
 };
 
 const HISTORY_KEY = "jiugong-sudoku-history-v1";
+const CURRENT_GAME_KEY = "jiugong-sudoku-current-game-v1";
 const DIFFICULTIES: Record<
   Difficulty,
   { label: string; clues: number; description: string }
@@ -79,6 +96,68 @@ const formatDate = (date: string) =>
     minute: "2-digit",
   }).format(new Date(date));
 
+const isBoard = (value: unknown): value is number[] =>
+  Array.isArray(value) &&
+  value.length === 81 &&
+  value.every(
+    (cell) => Number.isInteger(cell) && Number(cell) >= 0 && Number(cell) <= 9,
+  );
+
+const isNotes = (value: unknown): value is Notes => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([index, candidates]) => {
+    const cell = Number(index);
+    return (
+      Number.isInteger(cell) &&
+      cell >= 0 &&
+      cell < 81 &&
+      Array.isArray(candidates) &&
+      candidates.every(
+        (candidate) =>
+          Number.isInteger(candidate) && candidate >= 1 && candidate <= 9,
+      )
+    );
+  });
+};
+
+const isCurrentGameSave = (value: unknown): value is CurrentGameSave => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const save = value as Partial<CurrentGameSave>;
+  if (
+    save.version !== 1 ||
+    !save.difficulty ||
+    !(save.difficulty in DIFFICULTIES) ||
+    !isBoard(save.solution) ||
+    !isBoard(save.puzzle) ||
+    !isBoard(save.board) ||
+    !isNotes(save.notes) ||
+    !Array.isArray(save.undoHistory) ||
+    !save.undoHistory.every(
+      (snapshot) =>
+        snapshot && isBoard(snapshot.board) && isNotes(snapshot.notes),
+    ) ||
+    !Number.isInteger(save.mistakes) ||
+    Number(save.mistakes) < 0 ||
+    !Number.isInteger(save.seconds) ||
+    Number(save.seconds) < 0 ||
+    typeof save.paused !== "boolean" ||
+    typeof save.noteMode !== "boolean" ||
+    typeof save.status !== "string" ||
+    typeof save.won !== "boolean"
+  ) return false;
+
+  if (
+    save.selected !== null &&
+    (!Number.isInteger(save.selected) || Number(save.selected) < 0 || Number(save.selected) >= 81)
+  ) return false;
+
+  return save.puzzle.every(
+    (given, index) =>
+      (given === 0 || given === save.solution?.[index]) &&
+      (given === 0 || given === save.board?.[index]),
+  );
+};
+
 export default function Home() {
   const [difficulty, setDifficulty] = useState<Difficulty>("expert");
   const [solution, setSolution] = useState(BASE_SOLUTION);
@@ -96,6 +175,7 @@ export default function Home() {
   const [noteMode, setNoteMode] = useState(false);
   const [status, setStatus] = useState("选择一个空格开始");
   const [won, setWon] = useState(false);
+  const [storageReady, setStorageReady] = useState(false);
 
   useEffect(() => {
     try {
@@ -116,15 +196,86 @@ export default function Home() {
         );
       }
     } catch {
-      window.localStorage.removeItem(HISTORY_KEY);
+      try {
+        window.localStorage.removeItem(HISTORY_KEY);
+      } catch {}
+    }
+
+    try {
+      const raw = window.localStorage.getItem(CURRENT_GAME_KEY);
+      if (raw) {
+        const save: unknown = JSON.parse(raw);
+        if (isCurrentGameSave(save)) {
+          setDifficulty(save.difficulty);
+          setSolution(save.solution);
+          setPuzzle(save.puzzle);
+          setBoard(save.board);
+          setSelected(save.selected);
+          setNotes(save.notes);
+          setUndoHistory(save.undoHistory.slice(-40));
+          setMistakes(save.mistakes);
+          setSeconds(save.seconds);
+          setPaused(save.paused);
+          setNoteMode(save.noteMode);
+          setStatus(save.status);
+          setWon(save.won);
+        } else {
+          window.localStorage.removeItem(CURRENT_GAME_KEY);
+        }
+      }
+    } catch {
+      try {
+        window.localStorage.removeItem(CURRENT_GAME_KEY);
+      } catch {}
+    } finally {
+      setStorageReady(true);
     }
   }, []);
 
   useEffect(() => {
-    if (paused || won || reviewing || historyOpen) return;
+    if (!storageReady || reviewing) return;
+    const save: CurrentGameSave = {
+      version: 1,
+      difficulty,
+      solution,
+      puzzle,
+      board,
+      selected,
+      notes,
+      undoHistory,
+      mistakes,
+      seconds,
+      paused,
+      noteMode,
+      status,
+      won,
+    };
+    try {
+      window.localStorage.setItem(CURRENT_GAME_KEY, JSON.stringify(save));
+    } catch {}
+  }, [
+    board,
+    difficulty,
+    mistakes,
+    noteMode,
+    notes,
+    paused,
+    puzzle,
+    reviewing,
+    seconds,
+    selected,
+    solution,
+    status,
+    storageReady,
+    undoHistory,
+    won,
+  ]);
+
+  useEffect(() => {
+    if (!storageReady || paused || won || reviewing || historyOpen) return;
     const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [historyOpen, paused, reviewing, won]);
+  }, [historyOpen, paused, reviewing, storageReady, won]);
 
   const activeBoard = reviewing?.board ?? board;
   const activePuzzle = reviewing?.puzzle ?? puzzle;
@@ -337,12 +488,18 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (historyOpen) setHistoryOpen(false);
-        else if (reviewing) setReviewing(null);
+        else if (reviewing) {
+          setReviewing(null);
+          setSelected(null);
+        }
       }
       if (event.key >= "1" && event.key <= "9") enterNumber(Number(event.key));
       if (event.key === "Backspace" || event.key === "Delete") enterNumber(0);
       if (event.key.toLowerCase() === "n" && !reviewing) {
         setNoteMode((value) => !value);
+      }
+      if (event.key.toLowerCase() === "p"){
+        setPaused((value) => !value);
       }
       if (selected === null) return;
       const row = Math.floor(selected / 9);
@@ -389,7 +546,7 @@ export default function Home() {
             </div>
             <span className="toolbar-divider" />
             <div className="timer"><span>用时</span><strong>{formatTime(activeSeconds)}</strong></div>
-            <button className="pause-button" onClick={() => setReviewing(null)}>退出复盘</button>
+            <button className="pause-button" onClick={() => { setReviewing(null); setSelected(null); }}>退出复盘</button>
           </>
         ) : (
           <>
@@ -517,7 +674,7 @@ export default function Home() {
               <div className="review-detail"><span aria-hidden="true">✓</span><b>标准答案</b><small>与关卡答案一致</small></div>
               <div className="review-detail"><span aria-hidden="true">◷</span><b>{formatTime(reviewing.seconds)}</b><small>完成用时</small></div>
               <div className="review-detail"><span aria-hidden="true">×</span><b>{reviewing.mistakes} 次</b><small>冲突次数</small></div>
-              <button onClick={() => setReviewing(null)}><span aria-hidden="true">←</span><b>返回游戏</b><small>退出历史复盘</small></button>
+              <button onClick={() => { setReviewing(null); setSelected(null); }}><span aria-hidden="true">←</span><b>返回游戏</b><small>退出历史复盘</small></button>
             </>
           ) : (
             <>

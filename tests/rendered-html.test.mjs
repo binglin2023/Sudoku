@@ -45,6 +45,9 @@ test("ships the finished social image and removes the starter preview", async ()
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(pageSource, /number\s*===\s*solution\[index\]/);
   assert.match(pageSource, /jiugong-sudoku-history-v1/);
+  assert.match(pageSource, /jiugong-sudoku-current-game-v1/);
+  assert.match(pageSource, /isCurrentGameSave/);
+  assert.match(pageSource, /setUndoHistory\(save\.undoHistory\.slice\(-40\)\)/);
   assert.match(pageSource, /value\s*!==\s*solution\[selected\]/);
   await assert.rejects(access(new URL("../app\/_sites-preview", import.meta.url)));
 });
