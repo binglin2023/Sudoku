@@ -34,6 +34,7 @@ type GameRecord = {
 
 const HISTORY_KEY = "jiugong-sudoku-history-v1";
 const CURRENT_GAME_KEY = "jiugong-sudoku-current-game-v1";
+const MAX_SAVED_GAMES = 500;
 const DIFFICULTIES: Record<
   Difficulty,
   { label: string; clues: number; description: string }
@@ -180,20 +181,23 @@ export default function Home() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(HISTORY_KEY);
-      if (!raw) return;
-      const records = JSON.parse(raw) as GameRecord[];
-      if (Array.isArray(records)) {
-        setSavedGames(
-          records.filter(
-            (record) =>
-              record &&
-              Array.isArray(record.puzzle) &&
-              record.puzzle.length === 81 &&
-              Array.isArray(record.board) &&
-              record.board.length === 81 &&
-              record.difficulty in DIFFICULTIES,
-          ),
-        );
+      if (raw) {
+        const records = JSON.parse(raw) as GameRecord[];
+        if (Array.isArray(records)) {
+          setSavedGames(
+            records
+              .filter(
+                (record) =>
+                  record &&
+                  Array.isArray(record.puzzle) &&
+                  record.puzzle.length === 81 &&
+                  Array.isArray(record.board) &&
+                  record.board.length === 81 &&
+                  record.difficulty in DIFFICULTIES,
+              )
+              .slice(0, MAX_SAVED_GAMES),
+          );
+        }
       }
     } catch {
       try {
@@ -335,7 +339,7 @@ export default function Home() {
         mistakes,
       };
       setSavedGames((items) => {
-        const next = [record, ...items].slice(0, 30);
+        const next = [record, ...items].slice(0, MAX_SAVED_GAMES);
         try {
           window.localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
         } catch {}

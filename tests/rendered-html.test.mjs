@@ -46,6 +46,9 @@ test("ships the finished social image and removes the starter preview", async ()
   assert.match(pageSource, /number\s*===\s*solution\[index\]/);
   assert.match(pageSource, /jiugong-sudoku-history-v1/);
   assert.match(pageSource, /jiugong-sudoku-current-game-v1/);
+  assert.match(pageSource, /MAX_SAVED_GAMES\s*=\s*500/);
+  assert.doesNotMatch(pageSource, /slice\(0,\s*30\)/);
+  assert.doesNotMatch(pageSource, /if\s*\(!raw\)\s*return/);
   assert.match(pageSource, /isCurrentGameSave/);
   assert.match(pageSource, /setUndoHistory\(save\.undoHistory\.slice\(-40\)\)/);
   assert.match(pageSource, /value\s*!==\s*solution\[selected\]/);
